@@ -174,6 +174,14 @@
         <input type="text" id="concatColumns" value="8,11,15,16,6">
         <p class="help-text">По умолчанию: 8 (страны отправления), 11 (страны назначения), 15 (коды ТНВЭД), 16 (товарные знаки), 6 (контактная информация)</p>
         
+        <label for="sumColumns">Суммировать столбцы (через запятую):</label>
+        <input type="text" id="sumColumns" value="19,20,22">
+        <p class="help-text">По умолчанию: 19 (вес брутто), 20 (кол-во), 22 (факт стоим)</p>
+        
+        <label for="firstValueColumns">Брать первое заполненное значение (через запятую):</label>
+        <input type="text" id="firstValueColumns" value="1,2,4,5,7,9,10,13,14,18,21,23">
+        <p class="help-text">По умолчанию: остальные поля (1-отправитель, 2-адрес отправителя и т.д.)</p>
+        
         <div>
             <h3>Соответствие полей</h3>
             <table class="field-mapping">
@@ -209,6 +217,12 @@
     </div>
     
     <button id="mergeButton" disabled>Объединить файлы</button>
+    
+    <div id="stats-container" style="display: none; margin: 20px 0; padding: 15px; background-color: #f0f8ff; border: 1px solid #a0d0ff; border-radius: 5px;">
+        <h3>Статистика записей:</h3>
+        <div id="file-stats"></div>
+        <div id="total-stats" style="margin-top: 10px; font-weight: bold;"></div>
+    </div>
     
     <div id="status"></div>
     
@@ -248,8 +262,13 @@
         const status = document.getElementById('status');
         const groupByColumnsInput = document.getElementById('groupByColumns');
         const concatColumnsInput = document.getElementById('concatColumns');
+        const sumColumnsInput = document.getElementById('sumColumns');
+        const firstValueColumnsInput = document.getElementById('firstValueColumns');
         const sheetSelectionContainer = document.getElementById('sheet-selection-container');
         const sheetOptions = document.getElementById('sheet-options');
+        const statsContainer = document.getElementById('stats-container');
+        const fileStats = document.getElementById('file-stats');
+        const totalStats = document.getElementById('total-stats');
         
         const files = [];
         const fileSheets = {}; // Объект для хранения информации о листах каждого файла
@@ -455,6 +474,9 @@
             // Показываем сообщение о процессе
             showStatus('Обработка файлов...', 'info');
             mergeButton.disabled = true;
+            statsContainer.style.display = 'none';
+            fileStats.innerHTML = '';
+            totalStats.innerHTML = '';
             
             try {
                 // Получаем значения полей группировки и конкатенации
@@ -468,9 +490,20 @@
                     .map(num => parseInt(num.trim()) - 1) // Уменьшаем на 1 для индексации с 0
                     .filter(num => !isNaN(num));
                 
+                const sumIndices = sumColumnsInput.value
+                    .split(',')
+                    .map(num => parseInt(num.trim()) - 1) // Уменьшаем на 1 для индексации с 0
+                    .filter(num => !isNaN(num));
+                
+                const firstValueIndices = firstValueColumnsInput.value
+                    .split(',')
+                    .map(num => parseInt(num.trim()) - 1) // Уменьшаем на 1 для индексации с 0
+                    .filter(num => !isNaN(num));
+                
                 // Обрабатываем все файлы
                 let allData = [];
                 let headersAdded = false;
+                let fileRecordCounts = []; // Массив для хранения количества записей по файлам
                 
                 for (let i = 0; i < files.length; i++) {
                     const file = files[i];
@@ -478,6 +511,7 @@
                     
                     try {
                         const data = await readExcelFile(file, i);
+                        let fileRecordCount = 0; // Счетчик записей для текущего файла
                         
                         // Обрабатываем данные из каждого листа
                         for (const sheetName in data) {
@@ -508,10 +542,18 @@
                                 
                                 // Добавляем данные (все строки кроме заголовка)
                                 if (reorderedData.length > 1) {
-                                    allData = [...allData, ...reorderedData.slice(1)];
+                                    const recordsToAdd = reorderedData.slice(1);
+                                    allData = [...allData, ...recordsToAdd];
+                                    fileRecordCount += recordsToAdd.length;
                                 }
                             }
                         }
+                        
+                        // Добавляем количество записей в массив
+                        fileRecordCounts.push({
+                            name: file.name,
+                            count: fileRecordCount
+                        });
                     } catch (error) {
                         console.error(`Ошибка при обработке файла ${file.name}:`, error);
                         showStatus(`Ошибка при обработке файла ${file.name}: ${error.message}`, 'error');
@@ -530,7 +572,7 @@
                     XLSX.utils.book_append_sheet(wb, ws, "Merged Data");
                     
                     // Создаем сводную таблицу
-                    const pivotData = createPivotTable(allData, groupByIndices, concatIndices);
+                    const pivotData = createPivotTable(allData, groupByIndices, concatIndices, sumIndices, firstValueIndices);
                     
                     if (pivotData.length > 1) {
                         const pivotWS = XLSX.utils.aoa_to_sheet(pivotData);
@@ -547,6 +589,9 @@
                     
                     // Сохраняем (скачиваем) файл
                     XLSX.writeFile(wb, fileName);
+                    
+                    // Показываем статистику по количеству записей
+                    displayRecordStats(fileRecordCounts, allData.length - 1, pivotData.length - 1);
                     
                     showStatus(`Файлы успешно объединены и сохранены как ${fileName}`, 'success');
                 } else {
@@ -711,7 +756,7 @@
         }
         
         // Функция для создания сводной таблицы
-        function createPivotTable(data, groupByIndices, concatIndices) {
+        function createPivotTable(data, groupByIndices, concatIndices, sumIndices, firstValueIndices) {
             if (!data || data.length < 2) return [];
             
             const headers = data[0];
@@ -729,52 +774,123 @@
                         concatValues: groupByIndices.map(idx => ({
                             colIndex: idx,
                             value: row[idx] || ''
-                        }))
+                        })),
+                        sumValues: {},
+                        firstValues: {} // Для хранения первых заполненных значений
                     };
+                    
+                    // Инициализация суммируемых значений
+                    sumIndices.forEach(idx => {
+                        groupedData[groupKey].sumValues[idx] = 0;
+                    });
+                    
+                    // Инициализация полей для первого заполненного значения
+                    firstValueIndices.forEach(idx => {
+                        groupedData[groupKey].firstValues[idx] = null; // null значит, что значение еще не найдено
+                    });
                 }
                 
                 groupedData[groupKey].count++;
                 groupedData[groupKey].rows.push(row);
+                
+                // Суммирование числовых значений
+                sumIndices.forEach(idx => {
+                    let value = row[idx];
+                    if (value !== undefined && value !== null && value !== '') {
+                        // Преобразуем в число, удаляем нечисловые символы кроме точки
+                        let numValue = parseFloat(String(value).replace(/[^\d.-]/g, ''));
+                        if (!isNaN(numValue)) {
+                            groupedData[groupKey].sumValues[idx] += numValue;
+                        }
+                    }
+                });
+                
+                // Проверка на первое заполненное значение для выбранных полей
+                firstValueIndices.forEach(idx => {
+                    // Если для данного поля еще не найдено заполненное значение
+                    if (groupedData[groupKey].firstValues[idx] === null) {
+                        let value = row[idx];
+                        // Проверяем, что значение не пустое
+                        if (value !== undefined && value !== null && value !== '') {
+                            groupedData[groupKey].firstValues[idx] = value;
+                        }
+                    }
+                });
+            });
+            
+            // Убедимся, что все поля обработаны и имеют значения (путем второго прохода)
+            Object.keys(groupedData).forEach(groupKey => {
+                const group = groupedData[groupKey];
+                
+                // Для полей с первым заполненным значением, если значение не найдено, ищем в других записях
+                firstValueIndices.forEach(idx => {
+                    // Если значение до сих пор null, попробуем найти любое заполненное из строк группы
+                    if (group.firstValues[idx] === null) {
+                        for (const row of group.rows) {
+                            let value = row[idx];
+                            if (value !== undefined && value !== null && value !== '') {
+                                group.firstValues[idx] = value;
+                                break;
+                            }
+                        }
+                        
+                        // Если все равно не нашли, установим пустую строку
+                        if (group.firstValues[idx] === null) {
+                            group.firstValues[idx] = '';
+                        }
+                    }
+                });
             });
             
             const allColumnIndices = Array.from({ length: headers.length }, (_, i) => i);
             
-            const regularIndices = allColumnIndices.filter(idx => 
-                !groupByIndices.includes(idx) && !concatIndices.includes(idx)
+            // Находим остальные индексы, не включенные ни в одну из категорий
+            const otherIndices = allColumnIndices.filter(idx => 
+                !groupByIndices.includes(idx) && 
+                !concatIndices.includes(idx) &&
+                !sumIndices.includes(idx) &&
+                !firstValueIndices.includes(idx)
             );
             
+            // Порядок колонок: сначала группировка, потом счетчик, затем конкатенация, затем суммы, затем первые значения, затем остальные
             const columnOrder = [
                 ...groupByIndices, 
-                -1,
+                -1, // счетчик записей
                 ...concatIndices,
-                ...regularIndices
+                ...sumIndices,
+                ...firstValueIndices,
+                ...otherIndices
             ];
             
             const pivotHeaders = columnOrder.map(idx => {
                 if (idx === -1) {
                     return 'кол-во записей';
-                } else if (idx === 2) { // 3-й столбец (индекс 2)
-                    return 'компания';
-                } else if (idx === 16) { // 17-й столбец (индекс 16)
-                    return 'Инкотермс';
-                } else if (idx === 11) { // 12-й столбец (индекс 11)
-                    return 'таможня назначения';
-                } else if (idx === 7) { // 8-й столбец (индекс 7)
-                    return 'страны отправления';
-                } else if (idx === 10) { // 11-й столбец (индекс 10)
-                    return 'страны назначения';
-                } else if (idx === 14) { // 15-й столбец (индекс 14)
-                    return 'коды ТНВЭД';
-                } else if (idx === 15) { // 16-й столбец (индекс 15)
-                    return 'товарные знаки';
-                } else if (idx === 5) { // 6-й столбец (индекс 5)
-                    return 'контактная информация';
                 } else if (groupByIndices.includes(idx)) {
+                    // Для полей группировки используем специальные подписи для известных полей
+                    if (idx === 2) return 'компания';
+                    if (idx === 16) return 'Инкотермс';
+                    if (idx === 11) return 'таможня назначения';
                     return `[ГРУППА] ${headers[idx]}`;
                 } else if (concatIndices.includes(idx)) {
+                    // Для полей конкатенации используем специальные подписи для известных полей
+                    if (idx === 7) return 'страны отправления';
+                    if (idx === 10) return 'страны назначения';
+                    if (idx === 14) return 'коды ТНВЭД';
+                    if (idx === 15) return 'товарные знаки';
+                    if (idx === 5) return 'контактная информация';
                     return `[КОНКАТ] ${headers[idx]}`;
-                } else {
+                } else if (sumIndices.includes(idx)) {
+                    // Для полей суммирования используем специальные подписи для известных полей
+                    if (idx === 18) return 'вес брутто';
+                    if (idx === 19) return 'кол-во';
+                    if (idx === 21) return 'факт стоим';
+                    return `[СУММА] ${headers[idx]}`;
+                } else if (firstValueIndices.includes(idx)) {
+                    // Для полей с первым заполненным значением
                     return `[ПЕРВЫЙ] ${headers[idx]}`;
+                } else {
+                    // Для остальных полей
+                    return `[ДРУГОЕ] ${headers[idx]}`;
                 }
             });
             
@@ -786,17 +902,20 @@
                 
                 columnOrder.forEach(idx => {
                     if (idx === -1) {
+                        // Счетчик записей
                         pivotRow.push(group.count.toString());
                         return;
                     }
                     
                     if (groupByIndices.includes(idx)) {
+                        // Поля группировки
                         const groupIndex = groupByIndices.indexOf(idx);
                         pivotRow.push(group.concatValues[groupIndex].value);
                         return;
                     }
                     
                     if (concatIndices.includes(idx)) {
+                        // Поля конкатенации - объединяем уникальные значения
                         const uniqueValues = new Set();
                         group.rows.forEach(row => {
                             if (row[idx] && row[idx] !== '') {
@@ -807,6 +926,21 @@
                         return;
                     }
                     
+                    if (sumIndices.includes(idx)) {
+                        // Поля суммирования
+                        const sum = group.sumValues[idx];
+                        // Форматируем число с двумя десятичными знаками
+                        pivotRow.push(sum.toFixed(2));
+                        return;
+                    }
+                    
+                    if (firstValueIndices.includes(idx)) {
+                        // Берем первое заполненное значение
+                        pivotRow.push(group.firstValues[idx]);
+                        return;
+                    }
+                    
+                    // Для всех остальных полей берем первое значение из группы (как раньше)
                     let value = '';
                     for (const row of group.rows) {
                         if (row[idx] && row[idx] !== '') {
@@ -821,6 +955,30 @@
             });
             
             return pivotData;
+        }
+        
+        // Функция для отображения статистики записей
+        function displayRecordStats(fileRecords, totalRecords, pivotRecords) {
+            statsContainer.style.display = 'block';
+            fileStats.innerHTML = '';
+            
+            // Формируем статистику по каждому файлу
+            fileRecords.forEach(record => {
+                const fileStatItem = document.createElement('div');
+                fileStatItem.innerHTML = `<span>${record.name}: ${record.count} записей</span>`;
+                fileStats.appendChild(fileStatItem);
+            });
+            
+            // Показываем общую статистику
+            totalStats.innerHTML = `
+                <div>Итого в объединенном файле: ${totalRecords} записей</div>
+                <div>В сводной таблице: ${pivotRecords} записей</div>
+            `;
+            
+            // Прокручиваем страницу вниз, чтобы показать статистику
+            setTimeout(() => {
+                statsContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 100);
         }
     </script>
 </body>
