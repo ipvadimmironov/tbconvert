@@ -856,14 +856,33 @@
                 !firstValueIndices.includes(idx)
             );
             
-            // Порядок колонок: сначала группировка, потом счетчик, затем конкатенация, затем суммы, затем первые значения, затем остальные
+            // Индексы столбцов, которые нужно переместить вместе: "кол-во", "ед изм", "факт стоим"
+            // Важен порядок: 19="кол-во"(20-1), 20="ед изм"(21-1), 21="факт стоим"(22-1)
+            const quantityColumns = [18, 19, 20, 21]; // индексы колонок, которые нужно сгруппировать вместе
+            const currencyIndex = 22; // индекс колонки "валюта" (23-1)
+            
+            // Удаляем эти колонки из других групп, если они там есть
+            const filteredSumIndices = sumIndices.filter(idx => !quantityColumns.includes(idx));
+            const filteredFirstValueIndices = firstValueIndices.filter(idx => !quantityColumns.includes(idx) && idx !== currencyIndex);
+            
+            // Порядок колонок: 
+            // 1. Сначала группировка 
+            // 2. Счетчик записей
+            // 3. Конкатенация
+            // 4. Суммы (кроме количественных)
+            // 5. Количественные колонки (кол-во, ед изм, факт стоим)
+            // 6. Валюта
+            // 7. Первые значения (кроме уже использованных)
+            // 8. Остальные столбцы
             const columnOrder = [
                 ...groupByIndices, 
                 -1, // счетчик записей
                 ...concatIndices,
-                ...sumIndices,
-                ...firstValueIndices,
-                ...otherIndices
+                ...filteredSumIndices,
+                ...filteredFirstValueIndices,
+                ...otherIndices.filter(idx => !quantityColumns.includes(idx) && idx !== currencyIndex),
+                ...quantityColumns,
+                currencyIndex, // валюта
             ];
             
             const pivotHeaders = columnOrder.map(idx => {
@@ -892,6 +911,14 @@
                 } else if (firstValueIndices.includes(idx)) {
                     // Для полей с первым заполненным значением
                     return `[ПЕРВЫЙ] ${headers[idx]}`;
+                } else if (quantityColumns.includes(idx)) {
+                    // Специальные подписи для количественных колонок
+                    if (idx === 19) return 'кол-во';
+                    if (idx === 20) return 'ед изм';
+                    if (idx === 21) return 'факт стоим';
+                    return headers[idx];
+                } else if (idx === currencyIndex) {
+                    return 'валюта';
                 } else {
                     // Для остальных полей
                     return `[ДРУГОЕ] ${headers[idx]}`;
