@@ -1,0 +1,25 @@
+{
+  "name": "tbparser2",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "build": "pkg ."
+  },
+  "author": "",
+  "license": "ISC",
+  "keywords": [],
+  "description": "A tool for merging Excel files",
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "bin": "index.js",
+  "pkg": {
+    "targets": [
+      "node16-win-x64"
+    ],
+    "outputPath": "dist",
+    "assets": []
+  }
+}
